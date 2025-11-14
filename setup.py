@@ -1,13 +1,13 @@
 from setuptools import setup
 
-package_name = 'teleop_twist_keyboard'
+package_name = 'teleop_arm_twist_keyboard'
 
 setup(
     name=package_name,
     version='2.4.1',
     packages=[],
     py_modules=[
-        'teleop_twist_keyboard'
+        'teleop_arm_twist_keyboard'
     ],
     data_files=[
         ('share/ament_index/resource_index/packages',
@@ -34,7 +34,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'teleop_twist_keyboard = teleop_twist_keyboard:main'
+            'teleop_arm_twist_keyboard = teleop_arm_twist_keyboard:main'
         ],
     },
 )
