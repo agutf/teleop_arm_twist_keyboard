@@ -35,196 +35,235 @@ import sys
 import threading
 
 import geometry_msgs.msg
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from sensor_msgs.msg import JointState
 import rcl_interfaces.msg
 import rclpy
+from rclpy.node import Node
+import termios
+import tty
 
-if sys.platform == 'win32':
-    import msvcrt
-else:
-    import termios
-    import tty
+class TeleopArm(Node):
+    def __init__(self):
+        super().__init__('TeleopArmTwistKeyboard')
 
+        self.settings = self.saveTerminalSettings()
 
-msg = """
-This node takes keypresses from the keyboard and publishes them
-as Twist/TwistStamped messages.
----------------------------
-Moving around:
-        w
-   a         d
-        s    
+        # parameters
+        read_only_descriptor = rcl_interfaces.msg.ParameterDescriptor(read_only=True)
+        self.stamped = self.declare_parameter('stamped', False, read_only_descriptor).value
+        self.frame_id = self.declare_parameter('frame_id', '', read_only_descriptor).value
+        self.speed = self.declare_parameter('speed', 0.5, read_only_descriptor).value
+        self.turn = self.declare_parameter('turn', 1.0, read_only_descriptor).value
 
-z : up (+z)
-x : down (-z)
+        if not self.stamped and self.frame_id:
+            raise Exception("'frame_id' can only be set when 'stamped' is True")
 
-Orientation (same but with Shift):
----------------------------
-        W    
-   A         D
-        S    
+        self.msg = """
+            This node takes keypresses from the keyboard and publishes them
+            as Twist/TwistStamped messages.
+            ---------------------------
+            Moving around:
+                w
+            a       d
+                s    
 
-Z : up (+z)
-X : down (-z)
+            z : up (+z)
+            x : down (-z)
 
-anything else : stop
+            Orientation (same but with Shift):
+            ---------------------------
+                W    
+            A       D
+                S    
 
-+/- : increase/decrease speed by 10%
+            Z : up (+z)
+            X : down (-z)
 
-CTRL-C to quit
-"""
+            Gripper::
+            ---------------------------
 
-moveBindings = {
-    'w': (1, 0, 0, 0, 0, 0),
-    's': (-1, 0, 0, 0, 0, 0),
-    'a': (0, 1, 0, 0, 0, 0),
-    'd': (0, -1, 0, 0, 0, 0),
-    'z': (0, 0, 1, 0, 0, 0),
-    'x': (0, 0, -1, 0, 0, 0),
-    'W': (0, 0, 0, 1, 0, 0),
-    'S': (0, 0, 0, -1, 0, 0),
-    'A': (0, 0, 0, 0, 1, 0),
-    'D': (0, 0, 0, 0, -1, 0),
-    'Z': (0, 0, 0, 0, 0, 1),
-    'X': (0, 0, 0, 0, 0, -1),
-}
+            o : open gripper
+            c : close gripper
 
-speedBindings = {
-    '+': (1.1, 1.1),
-    '-': (.9, .9),
-}
+            anything else : stop
 
+            +/- : increase/decrease speed by 10%
 
-def getKey(settings):
-    if sys.platform == 'win32':
-        # getwch() returns a string on Windows
-        key = msvcrt.getwch()
-    else:
+            CTRL-C to quit
+            """
+
+        self.moveBindings = {
+            'w': (1, 0, 0, 0, 0, 0),
+            's': (-1, 0, 0, 0, 0, 0),
+            'a': (0, 1, 0, 0, 0, 0),
+            'd': (0, -1, 0, 0, 0, 0),
+            'z': (0, 0, 1, 0, 0, 0),
+            'x': (0, 0, -1, 0, 0, 0),
+        }
+
+        self.rotationBindings = {
+            'W': ("arm_7_joint", 11, 0.1),
+            'S': ("arm_7_joint", 11, -0.1),
+            'A': ("arm_6_joint", 9, 0.1),
+            'D': ("arm_6_joint", 9, -0.1),
+            'Z': ("arm_5_joint", 12, 0.1),
+            'X': ("arm_5_joint", 12, -0.1),
+        }
+
+        self.speedBindings = {
+            '+': (1.1, 1.1),
+            '-': (.9, .9),
+        }
+
+        self.gripperBindings = {
+            'o': 0.005,  # open
+            'c': -0.005, # close
+        }
+
+        self.arm_joints = ["arm_1_joint", "arm_2_joint", "arm_3_joint", "arm_4_joint", "arm_5_joint", "arm_6_joint", "arm_7_joint"]
+        self.gripper_joints = ['gripper_right_finger_joint', 'gripper_left_finger_joint']
+        self.current_positions = None
+
+        if self.stamped:
+            TwistMsg = geometry_msgs.msg.TwistStamped
+        else:
+            TwistMsg = geometry_msgs.msg.Twist
+
+        self.twist_msg = TwistMsg()
+
+        self.create_subscription(
+            JointState,
+            '/joint_states',
+            self.joint_states_cb,
+            10
+        )
+
+        self.arm_pub = self.create_publisher(TwistMsg, 'cmd_vel', 10)
+
+        self.rotation_pub = self.create_publisher(
+            JointTrajectory,
+            '/arm_controller/joint_trajectory',
+            10
+        )
+
+        self.gripper_pub = self.create_publisher(
+            JointTrajectory,
+            '/gripper_controller/joint_trajectory',
+            10
+        )
+
+        self.keyboard_thread = threading.Thread(
+            target=self.keyboard_loop,
+            daemon=True
+        )
+        self.keyboard_thread.start()
+
+    def keyboard_loop(self):
+        print(self.msg)
+        while rclpy.ok():
+            key = self.getKey()
+            self.process_key(key)
+
+    def process_key(self, key):
+        if key in self.moveBindings.keys():
+            x = self.moveBindings[key][0]
+            y = self.moveBindings[key][1]
+            z = self.moveBindings[key][2]
+            self.move_arm(x, y, z)
+        elif key in self.rotationBindings.keys():
+            # arm_link_7 = pos 11, arm_link_6 = pos 9 y arm_link_5 = pos 12
+            joint_name, position_index, delta = self.rotationBindings[key]
+            self.rotate_arm(joint_name, position_index, delta)
+        elif key in self.gripperBindings.keys():
+            delta = self.gripperBindings[key]
+            self.move_gripper(delta)
+        elif key in self.speedBindings.keys():
+            self.speed = self.speed * self.speedBindings[key][0]
+            self.turn = self.turn * self.speedBindings[key][1]
+        elif key == '\x03':  # CTRL-C
+            rclpy.shutdown()
+        else:
+            x = 0.0
+            y = 0.0
+            z = 0.0
+            self.move_arm(x, y, z)
+
+    def getKey(self):
         tty.setraw(sys.stdin.fileno())
         # sys.stdin.read() returns a string on Linux
         key = sys.stdin.read(1)
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-    return key
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.settings)
 
+        return key
+    
+    def saveTerminalSettings(self):
+        return termios.tcgetattr(sys.stdin)
 
-def saveTerminalSettings():
-    if sys.platform == 'win32':
-        return None
-    return termios.tcgetattr(sys.stdin)
+    def joint_states_cb(self, msg):
+        self.current_positions = {'names': msg.name, 'positions': msg.position}
 
+    def move_arm(self, x, y, z):
+        if self.stamped:
+            self.twist_msg.header.stamp = self.get_clock().now().to_msg()
 
-def restoreTerminalSettings(old_settings):
-    if sys.platform == 'win32':
-        return
-    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        self.twist_msg.twist.linear.x = x * self.speed
+        self.twist_msg.twist.linear.y = y * self.speed
+        self.twist_msg.twist.linear.z = z * self.speed
+        self.twist_msg.twist.angular.x = 0.0
+        self.twist_msg.twist.angular.y = 0.0
+        self.twist_msg.twist.angular.z = 0.0
+        self.arm_pub.publish(self.twist_msg)
 
+    def rotate_arm(self, joint_name, position_index, delta):
+        if self.current_positions is None:
+            return
+        
+        joint_idx = self.arm_joints.index(joint_name)
+        
+        joint_positions = [self.current_positions['names'].index(joint) for joint in self.arm_joints]
+        positions = [self.current_positions['positions'][i] for i in joint_positions]
 
-def vels(speed, turn):
-    return 'currently:\tspeed %.2f\tturn %.2f ' % (speed, turn)
+        traj = JointTrajectory()
+        traj.joint_names = self.arm_joints
 
+        point = JointTrajectoryPoint()
+        positions[joint_idx] = positions[joint_idx] + delta
+        point.positions = positions
+
+        traj.points.append(point)
+        self.rotation_pub.publish(traj)
+
+    def move_gripper(self, delta):
+        if self.current_positions is None:
+            return
+
+        traj = JointTrajectory()
+        traj.joint_names = self.gripper_joints
+
+        point = JointTrajectoryPoint()
+        point.positions = [self.current_positions['positions'][5] + delta, self.current_positions['positions'][8] + delta]
+
+        traj.points.append(point)
+        self.gripper_pub.publish(traj)
+
+def restoreTerminalSettings(settings):
+    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
 
 def main():
-    settings = saveTerminalSettings()
 
     rclpy.init()
 
-    node = rclpy.create_node('teleop_arm_twist_keyboard')
-
-    # parameters
-    read_only_descriptor = rcl_interfaces.msg.ParameterDescriptor(read_only=True)
-    stamped = node.declare_parameter('stamped', False, read_only_descriptor).value
-    frame_id = node.declare_parameter('frame_id', '', read_only_descriptor).value
-    speed = node.declare_parameter('speed', 0.5, read_only_descriptor).value
-    turn = node.declare_parameter('turn', 1.0, read_only_descriptor).value
-
-    if not stamped and frame_id:
-        raise Exception("'frame_id' can only be set when 'stamped' is True")
-
-    if stamped:
-        TwistMsg = geometry_msgs.msg.TwistStamped
-    else:
-        TwistMsg = geometry_msgs.msg.Twist
-
-    pub = node.create_publisher(TwistMsg, 'cmd_vel', 10)
-
-    spinner = threading.Thread(target=rclpy.spin, args=(node,))
-    spinner.start()
-
-    x = 0.0
-    y = 0.0
-    z = 0.0
-    rx = 0.0
-    ry = 0.0
-    rz = 0.0
-    status = 0.0
-
-    twist_msg = TwistMsg()
-
-    if stamped:
-        twist = twist_msg.twist
-        twist_msg.header.stamp = node.get_clock().now().to_msg()
-        twist_msg.header.frame_id = frame_id
-    else:
-        twist = twist_msg
+    node = TeleopArm()
 
     try:
-        print(msg)
-        print(vels(speed, turn))
-        while True:
-            key = getKey(settings)
-            if key in moveBindings.keys():
-                x = moveBindings[key][0]
-                y = moveBindings[key][1]
-                z = moveBindings[key][2]
-                rx = moveBindings[key][3]
-                ry = moveBindings[key][4]
-                rz = moveBindings[key][5]
-            elif key in speedBindings.keys():
-                speed = speed * speedBindings[key][0]
-                turn = turn * speedBindings[key][1]
-
-                print(vels(speed, turn))
-                if (status == 14):
-                    print(msg)
-                status = (status + 1) % 15
-            else:
-                x = 0.0
-                y = 0.0
-                z = 0.0
-                rx = 0.0
-                ry = 0.0
-                rz = 0.0
-                if (key == '\x03'):
-                    break
-
-            if stamped:
-                twist_msg.header.stamp = node.get_clock().now().to_msg()
-
-            twist.linear.x = x * speed
-            twist.linear.y = y * speed
-            twist.linear.z = z * speed
-            twist.angular.x = rx * turn
-            twist.angular.y = ry * turn
-            twist.angular.z = rz * turn
-            pub.publish(twist_msg)
-
-    except Exception as e:
-        print(e)
-
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
-        if stamped:
-            twist_msg.header.stamp = node.get_clock().now().to_msg()
-
-        twist.linear.x = 0.0
-        twist.linear.y = 0.0
-        twist.linear.z = 0.0
-        twist.angular.x = 0.0
-        twist.angular.y = 0.0
-        twist.angular.z = 0.0
-        pub.publish(twist_msg)
+        node.destroy_node()
         rclpy.shutdown()
-        spinner.join()
-
-        restoreTerminalSettings(settings)
+        restoreTerminalSettings(node.settings)
 
 
 if __name__ == '__main__':
