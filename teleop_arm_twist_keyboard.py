@@ -103,12 +103,12 @@ class TeleopArm(Node):
         }
 
         self.rotationBindings = {
-            'W': ("arm_7_joint", 11, 0.1),
-            'S': ("arm_7_joint", 11, -0.1),
-            'A': ("arm_6_joint", 9, 0.1),
-            'D': ("arm_6_joint", 9, -0.1),
-            'Z': ("arm_5_joint", 12, 0.1),
-            'X': ("arm_5_joint", 12, -0.1),
+            'W': ("arm_7_joint", 0.1),
+            'S': ("arm_7_joint", -0.1),
+            'A': ("arm_6_joint", 0.1),
+            'D': ("arm_6_joint", -0.1),
+            'Z': ("arm_5_joint", 0.1),
+            'X': ("arm_5_joint", -0.1),
         }
 
         self.speedBindings = {
@@ -173,8 +173,8 @@ class TeleopArm(Node):
             self.move_arm(x, y, z)
         elif key in self.rotationBindings.keys():
             # arm_link_7 = pos 11, arm_link_6 = pos 9 y arm_link_5 = pos 12
-            joint_name, position_index, delta = self.rotationBindings[key]
-            self.rotate_arm(joint_name, position_index, delta)
+            joint_name, delta = self.rotationBindings[key]
+            self.rotate_arm(joint_name, delta)
         elif key in self.gripperBindings.keys():
             delta = self.gripperBindings[key]
             self.move_gripper(delta)
@@ -215,7 +215,7 @@ class TeleopArm(Node):
         self.twist_msg.twist.angular.z = 0.0
         self.arm_pub.publish(self.twist_msg)
 
-    def rotate_arm(self, joint_name, position_index, delta):
+    def rotate_arm(self, joint_name, delta):
         if self.current_positions is None:
             return
         
@@ -228,7 +228,7 @@ class TeleopArm(Node):
         traj.joint_names = self.arm_joints
 
         point = JointTrajectoryPoint()
-        positions[joint_idx] = positions[joint_idx] + delta
+        positions[joint_idx] = positions[joint_idx] + (delta * self.speed)
         point.positions = positions
 
         traj.points.append(point)
@@ -237,12 +237,15 @@ class TeleopArm(Node):
     def move_gripper(self, delta):
         if self.current_positions is None:
             return
+        
+        right_gripper_idx = self.current_positions['names'].index(self.gripper_joints[0])
+        left_gripper_idx = self.current_positions['names'].index(self.gripper_joints[1])
 
         traj = JointTrajectory()
         traj.joint_names = self.gripper_joints
 
         point = JointTrajectoryPoint()
-        point.positions = [self.current_positions['positions'][5] + delta, self.current_positions['positions'][8] + delta]
+        point.positions = [self.current_positions['positions'][right_gripper_idx] + (delta * self.speed), self.current_positions['positions'][left_gripper_idx] + (delta * self.speed)]
 
         traj.points.append(point)
         self.gripper_pub.publish(traj)
