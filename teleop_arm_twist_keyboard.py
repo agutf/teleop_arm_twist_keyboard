@@ -54,7 +54,7 @@ class TeleopArm(Node):
         read_only_descriptor = rcl_interfaces.msg.ParameterDescriptor(read_only=True)
         self.stamped = self.declare_parameter('stamped', False, read_only_descriptor).value
         self.frame_id = self.declare_parameter('frame_id', '', read_only_descriptor).value
-        self.speed = self.declare_parameter('speed', 0.5, read_only_descriptor).value
+        self.speed = self.declare_parameter('speed', 0.1, read_only_descriptor).value
         self.turn = self.declare_parameter('turn', 1.0, read_only_descriptor).value
 
         if not self.stamped and self.frame_id:
@@ -212,25 +212,6 @@ class TeleopArm(Node):
         self.twist_msg.twist.angular.z = rz * self.turn
         self.arm_pub.publish(self.twist_msg)
 
-    def rotate_arm(self, joint_name, delta):
-        if self.current_positions is None:
-            return
-        
-        joint_idx = self.arm_joints.index(joint_name)
-        
-        joint_positions = [self.current_positions['names'].index(joint) for joint in self.arm_joints]
-        positions = [self.current_positions['positions'][i] for i in joint_positions]
-
-        traj = JointTrajectory()
-        traj.joint_names = self.arm_joints
-
-        point = JointTrajectoryPoint()
-        positions[joint_idx] = positions[joint_idx] + (delta * self.speed)
-        point.positions = positions
-
-        traj.points.append(point)
-        self.rotation_pub.publish(traj)
-
     def move_gripper(self, delta):
         if self.current_positions is None:
             return
@@ -242,7 +223,7 @@ class TeleopArm(Node):
         traj.joint_names = self.gripper_joints
 
         point = JointTrajectoryPoint()
-        point.positions = [self.current_positions['positions'][right_gripper_idx] + (delta * self.speed), self.current_positions['positions'][left_gripper_idx] + (delta * self.speed)]
+        point.positions = [self.current_positions['positions'][right_gripper_idx] + (delta * self.speed * 5), self.current_positions['positions'][left_gripper_idx] + (delta * self.speed * 5)]
 
         traj.points.append(point)
         self.gripper_pub.publish(traj)
