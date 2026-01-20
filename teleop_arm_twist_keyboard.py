@@ -37,6 +37,7 @@ import threading
 import geometry_msgs.msg
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
+
 import rcl_interfaces.msg
 import rclpy
 from rclpy.node import Node
@@ -93,22 +94,19 @@ class TeleopArm(Node):
             CTRL-C to quit
             """
 
-        self.moveBindings = {
+        self.poseBindings = {
             'w': (1, 0, 0, 0, 0, 0),
             's': (-1, 0, 0, 0, 0, 0),
             'a': (0, 1, 0, 0, 0, 0),
             'd': (0, -1, 0, 0, 0, 0),
             'z': (0, 0, 1, 0, 0, 0),
             'x': (0, 0, -1, 0, 0, 0),
-        }
-
-        self.rotationBindings = {
-            'W': ("arm_7_joint", 0.1),
-            'S': ("arm_7_joint", -0.1),
-            'A': ("arm_6_joint", 0.1),
-            'D': ("arm_6_joint", -0.1),
-            'Z': ("arm_5_joint", 0.1),
-            'X': ("arm_5_joint", -0.1),
+            'W': (0, 0, 0, 1, 0, 0),
+            'S': (0, 0, 0, -1, 0, 0),
+            'A': (0, 0, 0, 0, 1, 0),
+            'D': (0, 0, 0, 0, -1, 0),
+            'Z': (0, 0, 0, 0, 0, 1),
+            'X': (0, 0, 0, 0, 0, -1),
         }
 
         self.speedBindings = {
@@ -166,15 +164,14 @@ class TeleopArm(Node):
             self.process_key(key)
 
     def process_key(self, key):
-        if key in self.moveBindings.keys():
-            x = self.moveBindings[key][0]
-            y = self.moveBindings[key][1]
-            z = self.moveBindings[key][2]
-            self.move_arm(x, y, z)
-        elif key in self.rotationBindings.keys():
-            # arm_link_7 = pos 11, arm_link_6 = pos 9 y arm_link_5 = pos 12
-            joint_name, delta = self.rotationBindings[key]
-            self.rotate_arm(joint_name, delta)
+        if key in self.poseBindings.keys():
+            x = self.poseBindings[key][0]
+            y = self.poseBindings[key][1]
+            z = self.poseBindings[key][2]
+            rx = self.poseBindings[key][3]
+            ry = self.poseBindings[key][4]
+            rz = self.poseBindings[key][5]
+            self.move_arm(x, y, z, rx, ry, rz)
         elif key in self.gripperBindings.keys():
             delta = self.gripperBindings[key]
             self.move_gripper(delta)
@@ -203,16 +200,16 @@ class TeleopArm(Node):
     def joint_states_cb(self, msg):
         self.current_positions = {'names': msg.name, 'positions': msg.position}
 
-    def move_arm(self, x, y, z):
+    def move_arm(self, x, y, z, rx, ry, rz):
         if self.stamped:
             self.twist_msg.header.stamp = self.get_clock().now().to_msg()
 
         self.twist_msg.twist.linear.x = x * self.speed
         self.twist_msg.twist.linear.y = y * self.speed
         self.twist_msg.twist.linear.z = z * self.speed
-        self.twist_msg.twist.angular.x = 0.0
-        self.twist_msg.twist.angular.y = 0.0
-        self.twist_msg.twist.angular.z = 0.0
+        self.twist_msg.twist.angular.x = rx * self.turn
+        self.twist_msg.twist.angular.y = ry * self.turn
+        self.twist_msg.twist.angular.z = rz * self.turn
         self.arm_pub.publish(self.twist_msg)
 
     def rotate_arm(self, joint_name, delta):
